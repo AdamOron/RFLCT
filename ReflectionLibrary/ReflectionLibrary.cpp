@@ -8,44 +8,133 @@ using unk_t = void *;
 #define PROTECTED_CSTR   "protected"
 #define PRIVATE_CSTR     "private"
 
-enum class FieldAccess
+enum class EFieldAccess
 {
+    UNKNOWN = 0,
     PUBLIC,
     PROTECTED,
     PRIVATE,
-    UNKNOWN,
 };
 
-FieldAccess ParseAccess(cstr_t accessStr)
+EFieldAccess ParseAccess(cstr_t accessStr)
 {
     if (!strcmp(accessStr, PUBLIC_CSTR))
-        return FieldAccess::PUBLIC;
+        return EFieldAccess::PUBLIC;
 
     if (!strcmp(accessStr, PROTECTED_CSTR))
-        return FieldAccess::PROTECTED;
+        return EFieldAccess::PROTECTED;
 
     if (!strcmp(accessStr, PRIVATE_CSTR))
-        return FieldAccess::PRIVATE;
+        return EFieldAccess::PRIVATE;
 
-    return FieldAccess::UNKNOWN;
+    return EFieldAccess::UNKNOWN;
+}
+
+enum class EPrimitiveId
+{
+    UNKNOWN = 0,
+    VOID,
+    BOOL,
+    CHAR,
+    INT,
+    SHORT,
+    FLOAT,
+    DOUBLE,
+    LONG,
+};
+
+typedef cstr_t unique_id_t;
+
+class Type
+{
+private:
+    union
+    {
+        EPrimitiveId Primitive;
+        unique_id_t Unique;
+    } m_Id;
+
+    bool m_bPrimitive;
+
+    Type(bool bPrimitive) :
+        m_Id(),
+        m_bPrimitive(bPrimitive)
+    {
+    }
+
+public:
+    Type(EPrimitiveId primitive) :
+        Type(true)
+    {
+        m_Id.Primitive = primitive;
+    }
+
+    Type(unique_id_t unique) :
+        Type(false)
+    {
+        m_Id.Unique= unique;
+    }
+
+    EPrimitiveId GetPrimitive() const
+    {
+        return m_bPrimitive ? m_Id.Primitive : EPrimitiveId::UNKNOWN;
+    }
+
+    unique_id_t GetUnique() const
+    {
+        return !m_bPrimitive ? m_Id.Unique : NULL;
+    }
+
+    bool Equals(EPrimitiveId primitive) const
+    {
+        return m_bPrimitive && m_Id.Primitive == primitive;
+    }
+
+    bool Equals(unique_id_t unique) const
+    {
+        return !m_bPrimitive && m_Id.Unique == unique;
+    }
+
+    bool operator==(EPrimitiveId primitive) const
+    {
+        return Equals(primitive);
+    }
+
+    bool operator==(unique_id_t unique) const
+    {
+        return Equals(unique);
+    }
+};
+
+#define INT_CSTR "int"
+
+Type ParseType(cstr_t typeStr)
+{
+    if (!strcmp(typeStr, INT_CSTR))
+        return Type(EPrimitiveId::INT);
+
+    return Type(typeStr);
 }
 
 class Field
 {
 protected:
     cstr_t m_Name;
-    FieldAccess m_Access;
+    Type m_Type;
+    EFieldAccess m_Access;
     bool m_bStatic;
 
-    Field(cstr_t name, FieldAccess access, bool bStatic) :
+    Field(cstr_t name, Type type, EFieldAccess access, bool bStatic) :
         m_Name(name),
+        m_Type(type),
         m_Access(access),
         m_bStatic(bStatic)
     {
     }
 
-    Field(cstr_t name, cstr_t accessStr, bool bStatic) :
+    Field(cstr_t name, cstr_t typeStr, cstr_t accessStr, bool bStatic) :
         m_Name(name),
+        m_Type(ParseType(typeStr)),
         m_Access(ParseAccess(accessStr)),
         m_bStatic(bStatic)
     {
@@ -57,9 +146,14 @@ public:
         return m_Name;
     }
 
-    FieldAccess GetAccess() const
+    EFieldAccess GetAccess() const
     {
         return m_Access;
+    }
+
+    const Type &GetType() const
+    {
+        return m_Type;
     }
 
     virtual unk_t GetWeak(unk_t object) const = 0;
@@ -99,6 +193,11 @@ public:
     cstr_t GetName() const
     {
         return m_Name;
+    }
+
+    const std::vector<Field *> &GetFields() const
+    {
+        return m_Fields;
     }
 
     const Field *GetField(cstr_t fieldName) const
@@ -142,6 +241,12 @@ namespace hidden \
         { \
             s_##className##Class->AddField(field); \
         } \
+    \
+    public: \
+        const Class *GetClass() \
+        { \
+            return s_##className##Class; \
+        } \
     }; \
     \
     Class *const className##Container::s_##className##Class = CreateClassDescriptor(#className); \
@@ -159,8 +264,8 @@ class className : public hidden::className##Container, __VA_ARGS__
 class name##Field : public Field \
 { \
 public: \
-    name##Field(cstr_t name, cstr_t accessStr) : \
-        Field(name, accessStr, false) \
+    name##Field() : \
+        Field(#name, #type, #access, false) \
     { \
     } \
     \
@@ -181,12 +286,11 @@ public: \
         if (s_IsDefined) \
             return; \
         \
-        object->AddField(new name##Field(#name, #access)); \
+        object->AddField(new name##Field()); \
         \
         s_IsDefined = true; \
     } \
-} \
-name##FieldInst = name##FieldCreator(this); \
+} name##FieldInst = name##FieldCreator(this); \
 \
 access: \
     type name
@@ -208,14 +312,9 @@ int main()
 
     std::cout << obj.m_Id << std::endl;
 
-    for (Class *clazz : g_ClassDescriptors)
+    for (Field *field : obj.GetClass()->GetFields())
     {
-        if (!strcmp(clazz->GetName(), "Object"))
-        {
-            int *pId = clazz->GetField("m_Id")->Get<int>(&obj);
-            std::cout << *pId << std::endl;
-            *pId = 7;
-        }
+        field->GetType();
     }
 
     std::cout << obj.m_Id << std::endl;
