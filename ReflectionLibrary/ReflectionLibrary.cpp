@@ -3,6 +3,8 @@
 
 using cstr_t = const char *;
 using unk_t = void *;
+using cinstance_t = unk_t;
+using type_t = const std::type_info &;
 
 #define PUBLIC_CSTR      "public"
 #define PROTECTED_CSTR   "protected"
@@ -45,86 +47,15 @@ enum class EPrimitiveId
 
 typedef cstr_t unique_id_t;
 
-class Type
-{
-private:
-    union
-    {
-        EPrimitiveId Primitive;
-        unique_id_t Unique;
-    } m_Id;
-
-    bool m_bPrimitive;
-
-    Type(bool bPrimitive) :
-        m_Id(),
-        m_bPrimitive(bPrimitive)
-    {
-    }
-
-public:
-    Type(EPrimitiveId primitive) :
-        Type(true)
-    {
-        m_Id.Primitive = primitive;
-    }
-
-    Type(unique_id_t unique) :
-        Type(false)
-    {
-        m_Id.Unique= unique;
-    }
-
-    EPrimitiveId GetPrimitive() const
-    {
-        return m_bPrimitive ? m_Id.Primitive : EPrimitiveId::UNKNOWN;
-    }
-
-    unique_id_t GetUnique() const
-    {
-        return !m_bPrimitive ? m_Id.Unique : NULL;
-    }
-
-    bool Equals(EPrimitiveId primitive) const
-    {
-        return m_bPrimitive && m_Id.Primitive == primitive;
-    }
-
-    bool Equals(unique_id_t unique) const
-    {
-        return !m_bPrimitive && m_Id.Unique == unique;
-    }
-
-    bool operator==(EPrimitiveId primitive) const
-    {
-        return Equals(primitive);
-    }
-
-    bool operator==(unique_id_t unique) const
-    {
-        return Equals(unique);
-    }
-};
-
-#define INT_CSTR "int"
-
-Type ParseType(cstr_t typeStr)
-{
-    if (!strcmp(typeStr, INT_CSTR))
-        return Type(EPrimitiveId::INT);
-
-    return Type(typeStr);
-}
-
 class Field
 {
 protected:
     cstr_t m_Name;
-    Type m_Type;
+    const std::type_info &m_Type;
     EFieldAccess m_Access;
     bool m_bStatic;
 
-    Field(cstr_t name, Type type, EFieldAccess access, bool bStatic) :
+    Field(cstr_t name, const std::type_info &type, EFieldAccess access, bool bStatic) :
         m_Name(name),
         m_Type(type),
         m_Access(access),
@@ -132,13 +63,15 @@ protected:
     {
     }
 
-    Field(cstr_t name, cstr_t typeStr, cstr_t accessStr, bool bStatic) :
+    Field(cstr_t name, const std::type_info &type, cstr_t accessStr, bool bStatic) :
         m_Name(name),
-        m_Type(ParseType(typeStr)),
+        m_Type(type),
         m_Access(ParseAccess(accessStr)),
         m_bStatic(bStatic)
     {
     }
+
+    virtual unk_t GetAbstractPointer(unk_t object) const = 0;
 
 public:
     cstr_t GetName() const
@@ -151,17 +84,37 @@ public:
         return m_Access;
     }
 
-    const Type &GetType() const
+    const std::type_info &GetType() const
     {
         return m_Type;
     }
 
-    virtual unk_t GetWeak(unk_t object) const = 0;
+    template <typename T>
+    T GetValue(unk_t object) const
+    {
+        return *reinterpret_cast<T *>(GetAbstractPointer(object));
+    }
 
     template <typename T>
-    T *Get(unk_t object) const
+    void SetValue(unk_t object, T value)
     {
-        return reinterpret_cast<T *>(GetWeak(object));
+        *reinterpret_cast<T *>(GetAbstractPointer(object)) = value;
+    }
+};
+
+class Function
+{
+private:
+    unk_t m_pFunction;
+    type_t m_ReturnType;
+    std::vector<type_t> m_ArgTypes;
+
+public:
+    Function(unk_t pFunction, type_t returnType) :
+        m_pFunction(pFunction),
+        m_ReturnType(returnType),
+        m_ArgTypes()
+    {
     }
 };
 
@@ -169,7 +122,7 @@ class Class
 {
 private:
     cstr_t m_Name;
-    std::vector<unk_t> m_Instances;
+    std::vector<cinstance_t> m_Instances;
     std::vector<Field *> m_Fields;
 
 public:
@@ -180,7 +133,7 @@ public:
     {
     }
 
-    void AddInstance(unk_t instance)
+    void AddInstance(cinstance_t instance)
     {
         m_Instances.push_back(instance);
     }
@@ -200,9 +153,14 @@ public:
         return m_Fields;
     }
 
-    const Field *GetField(cstr_t fieldName) const
+    const std::vector<cinstance_t> &GetInstances() const
     {
-        for (const Field *field : m_Fields)
+        return m_Instances;
+    }
+
+    Field *GetField(cstr_t fieldName) const
+    {
+        for (Field *field : m_Fields)
             if (!strcmp(fieldName, field->GetName()))
                 return field;
 
@@ -219,12 +177,12 @@ Class *CreateClassDescriptor(cstr_t className)
     return newClass;
 }
 
-namespace hidden
+namespace RFLCT
 {
 }
 
 #define _RFLCT_CLASS_DEFINE_CONTAINER(className) \
-namespace hidden \
+namespace _hidden_namespace \
 { \
     class className##Container \
     { \
@@ -254,68 +212,77 @@ namespace hidden \
 
 #define RFLCT_CLASS(className) \
 _RFLCT_CLASS_DEFINE_CONTAINER(className) \
-class className : public hidden::className##Container
+class className : public _hidden_namespace::className##Container
 
 #define RFLCT_CHILD_CLASS(className, ...) \
 _RFLCT_CLASS_DEFINE_CONTAINER(className) \
-class className : public hidden::className##Container, __VA_ARGS__
+class className : public _hidden_namespace::className##Container, __VA_ARGS__
 
 #define RFLCT_FIELD(className, access, type, name) \
 class name##Field : public Field \
 { \
 public: \
     name##Field() : \
-        Field(#name, #type, #access, false) \
+        Field(#name, typeid(type), #access, false) \
     { \
     } \
     \
-    unk_t GetWeak(unk_t object) const override \
+protected: \
+    unk_t GetAbstractPointer(unk_t object) const override \
     { \
         return &((className *) object)->name; \
     } \
 }; \
 \
-class name##FieldCreator \
-{ \
 private: \
-    inline static bool s_IsDefined = false; \
-\
-public: \
-    name##FieldCreator(className *object) \
-    { \
-        if (s_IsDefined) \
-            return; \
-        \
-        object->AddField(new name##Field()); \
-        \
-        s_IsDefined = true; \
-    } \
-} name##FieldInst = name##FieldCreator(this); \
+bool _##name##FieldCreator = [this] \
+{ \
+    static bool s_bFieldDefined = false; \
+    \
+    if (s_bFieldDefined) \
+        return false; \
+    \
+    this->AddField(new name##Field()); \
+    \
+    s_bFieldDefined  = true; \
+    \
+    return true; \
+}(); \
 \
 access: \
     type name
 
+#define RFLCT_FUNCTION(className, access, name, returnType, ...) \
+access: \
+    returnType name(__VA_ARGS__)
+
+#define A(...) typeid(__VA_ARGS__)
+
 RFLCT_CLASS(Object)
 {
-    RFLCT_FIELD(Object, public, int, m_Id);
+    RFLCT_FIELD(Object, private, int, id);
+    RFLCT_FIELD(Object, protected, int, count);
+    RFLCT_FIELD(Object, public, cstr_t, name);
 
 public:
     Object(int id) :
-        m_Id(id)
+        id(id),
+        count(0),
+        name("dick")
     {
     }
 };
 
 int main()
 {
-    Object obj(5);
+    Object a(5), b(10), c(15);
 
-    std::cout << obj.m_Id << std::endl;
+    const Class *clazz = a.GetClass();
 
-    for (Field *field : obj.GetClass()->GetFields())
-    {
-        field->GetType();
-    }
+    for (Field *field : clazz->GetFields())
+        printf("%s %d\n", field->GetName(), field->GetAccess());
 
-    std::cout << obj.m_Id << std::endl;
+    Field *field = clazz->GetField("id");
+    for (cinstance_t inst : a.GetClass()->GetInstances())
+        printf("%d\n", field->GetValue<int>(inst));
 }
